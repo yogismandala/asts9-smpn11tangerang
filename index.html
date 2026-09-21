@@ -1467,22 +1467,7 @@
                         return;
                     }
                     // --- LOGIKA TAMBAHAN: FITUR SINGLE LOGIN (KHUSUS SISWA) ---
-                    if (userData.role === 'siswa' && userData.is_login === true) {
-                        if (typeof Swal !== 'undefined') {
-                            Swal.fire({
-                                icon: 'warning',
-                                title: 'Akses Ditolak!',
-                                text: 'Akun Anda sedang aktif di perangkat lain! Silahkan logout dari perangkat sebelumnya atau hubungi guru.',
-                                confirmButtonText: 'Saya Mengerti',
-                                confirmButtonColor: '#ef4444', // Warna merah pro
-                                allowOutsideClick: false // Siswa tidak bisa menutup pesan dengan klik sembarang tempat
-                            });
-                        } else {
-                            // Cadangan jika SweetAlert gagal dimuat, tampilkan teks biasa selama 10 detik
-                            showError('Akun Anda sedang aktif di perangkat lain! Silahkan logout dari perangkat sebelumnya atau hubungi guru.', 10000);
-                        }
-                        return;
-                    }
+                    
 
                     // Jika lolos cek, ubah status is_login menjadi true di database Supabase
                     if (userData.role === 'siswa') {
