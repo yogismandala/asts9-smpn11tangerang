@@ -1637,6 +1637,7 @@
                                     <li>Berdoalah sebelum mengerjakan soal ujian.</li>
                                     <li>Waktu ujian akan berjalan otomatis saat Anda masuk.</li>
                                     <li>Dilarang keluar dari aplikasi atau merefresh halaman saat ujian berlangsung.</li>
+                                    <li>Maksimal pelanggaran 5x, ketika pelanggaran mencapai 5x otomatis selesai</li>
                                     <li>${infoAttempt}</li>
                                     <li>Kerjakan dengan jujur dan teliti.</li>
                                 </ul>
@@ -2286,16 +2287,9 @@
             // Cek status saat pertama kali halaman dimuat
             document.addEventListener('DOMContentLoaded', updateConnectionStatus);
             
-            // 1. Pisahkan logika visibility change ke fungsi tersendiri
             function handleVisibilityViolation() {
-                if (currentUser?.role === 'siswa' && currentExam && !examSubmitted) {
-                    if (document.hidden && !isRefreshing) {
-                        violationCount++;
-                        localStorage.setItem('violationCount', violationCount.toString());
-                        updateViolationDisplay();
-                        showViolationWarning();
-                    }
-                }
+                if (document.hidden) markFocusLost();
+                else markFocusRegained();
             }
 
             // 2. Pisahkan logika klik kanan ke fungsi tersendiri
@@ -2316,6 +2310,8 @@
             }
 
             let lastViolationTimestamp = 0;
+            const MAX_VIOLATION_AUTOSUBMIT = 5;   // batas pelanggaran -> kumpul otomatis
+            let autoSubmitByViolationRunning = false;
             const VIOLATION_DEBOUNCE_MS = 800; // cegah dobel hitung jika beberapa event tumpang tindih
 
             function recordViolation() {
@@ -2326,7 +2322,27 @@
                 violationCount++;
                 localStorage.setItem('violationCount', violationCount.toString());
                 updateViolationDisplay();
-                showViolationWarning();
+                const isLastViolation = violationCount >= MAX_VIOLATION_AUTOSUBMIT;
+                if (!isLastViolation) showViolationWarning();   // pelanggaran terakhir: langsung kumpul, tanpa popup peringatan
+                if (typeof laporKeAdmin === 'function') laporKeAdmin();
+
+                // Kumpul otomatis jika pelanggaran mencapai batas
+                if (violationCount >= MAX_VIOLATION_AUTOSUBMIT && !autoSubmitByViolationRunning) {
+                    autoSubmitByViolationRunning = true;
+                    document.querySelectorAll('.violation-warning-popup').forEach(el => el.remove());
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Batas Pelanggaran Tercapai',
+                        text: 'Ujian Anda dikumpulkan otomatis karena pelanggaran mencapai ' + MAX_VIOLATION_AUTOSUBMIT + ' kali.',
+                        allowOutsideClick: false,
+                        showConfirmButton: false,
+                        timer: 8000,
+                        timerProgressBar: true
+                    });
+                    Promise.resolve(submitExam(true))
+                        .catch(err => console.error('Auto-submit pelanggaran gagal:', err))
+                        .finally(() => { autoSubmitByViolationRunning = false; }); // boleh dicoba lagi jika gagal kirim
+                }
             }
 
             function checkSplitScreenViolation() {
@@ -2352,14 +2368,8 @@
                 }
             }
 
-            // screen, misalnya klik address bar) tidak ikut dihitung pelanggaran.
-            function handleBlurViolation() {
-                if (currentUser?.role === 'siswa' && currentExam && !examSubmitted && !isRefreshing) {
-                    if (isScreenRatioViolated()) {
-                        recordViolation();
-                    }
-                }
-            }
+            function handleBlurViolation() { markFocusLost(); }
+            function handleFocusRegained() { markFocusRegained(); }
 
             // 3. Fungsi utamanya menjadi jauh lebih pendek dan aman
             function setupViolationDetection() {
@@ -2372,6 +2382,9 @@
                 document.removeEventListener('MSFullscreenChange', handleFullscreenViolation);
                 window.removeEventListener('resize', handleResizeViolation);
                 window.removeEventListener('blur', handleBlurViolation);
+                window.removeEventListener('focus', handleFocusRegained);
+                window.removeEventListener('pagehide', handleBlurViolation);
+                window.removeEventListener('pageshow', handleFocusRegained);
                 
                 // Pasang listener yang baru
                 document.addEventListener('visibilitychange', handleVisibilityViolation);
@@ -2382,6 +2395,19 @@
                 document.addEventListener('MSFullscreenChange', handleFullscreenViolation);
                 window.addEventListener('resize', handleResizeViolation);
                 window.addEventListener('blur', handleBlurViolation);
+                window.addEventListener('focus', handleFocusRegained);
+                window.addEventListener('pagehide', handleBlurViolation);
+                window.addEventListener('pageshow', handleFocusRegained);
+
+                // Polling cadangan: sebagian HP tidak memicu event blur saat overlay
+                // sistem (Circle to Search / Lens) muncul, tapi document.hasFocus() tetap false.
+                if (window._focusPoll) clearInterval(window._focusPoll);
+                focusLostActive = false;
+                window._focusPoll = setInterval(() => {
+                    if (!isExamActive()) return;
+                    if (document.hidden || !document.hasFocus()) markFocusLost();
+                    else markFocusRegained();
+                }, 700);
             }
             
             function updateViolationDisplay() {
@@ -3063,6 +3089,7 @@
                 // Jika SUKSES: baru tandai selesai dan bersihkan data lokal
                 if (typeof examSubmitted !== 'undefined') examSubmitted = true;
                 if (typeof hasSubmitted !== 'undefined') hasSubmitted = true;
+                document.querySelectorAll('.violation-warning-popup').forEach(el => el.remove());
 
                 // reset setelah kirim nilai
                 if (currentUser && currentUser.role === 'siswa') {
@@ -3215,7 +3242,6 @@
                                 </div>
                                 <h1 class="font-bold mb-2" style="font-family: ${customFont}, ${baseFontStack}; font-size: ${baseSize * 2}px; color: ${textColor};">Ujian Selesai!</h1>
                                 <p class="text-gray-600" style="font-family: ${customFont}, ${baseFontStack}; font-size: ${baseSize * 1.125}px;">Terima kasih telah menyelesaikan ujian</p>
-                                <p class="text-gray-600" style="font-family: ${customFont}, ${baseFontStack}; font-size: ${baseSize * 1.125}px;">Klik tombol kembali ke halaman login agar bisa mengikuti ujian selanjutnya</p>
                             </div>
                             
                             ${examSettings.show_score ? `
