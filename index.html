@@ -1226,16 +1226,6 @@
             window.onbeforeunload = function() {
                 isRefreshing = true;
             };
-            // Cadangan: di HP, beforeunload sering tidak terpicu saat refresh.
-            // pagehide (bukan dari bfcache) = halaman akan dimuat ulang/ditutup, BUKAN pelanggaran.
-            window.addEventListener('pagehide', function(e) {
-                if (!e.persisted) isRefreshing = true;
-            });
-            // Jika halaman dipulihkan dari bfcache, aktifkan lagi deteksi
-            window.addEventListener('pageshow', function(e) {
-                if (e.persisted) isRefreshing = false;
-                if (typeof markFocusRegained === 'function') markFocusRegained();
-            });
 
             function activateFullscreen() {
                 let element = document.documentElement; // Mengambil seluruh halaman
@@ -1313,18 +1303,6 @@
                     await loadExamQuestions();
                     if (typeof mulaiPelaporanSiswa === "function") mulaiPelaporanSiswa();
                     renderExamPage();
-
-                    // Jika setelah refresh pelanggaran sudah mencapai batas, langsung kumpulkan
-                    if (violationCount >= MAX_VIOLATION_AUTOSUBMIT) {
-                        setTimeout(() => {
-                            if (!examSubmitted && !autoSubmitByViolationRunning) {
-                                autoSubmitByViolationRunning = true;
-                                Promise.resolve(submitExam(true))
-                                    .catch(err => console.error('Auto-submit pelanggaran gagal:', err))
-                                    .finally(() => { autoSubmitByViolationRunning = false; });
-                            }
-                        }, 800);
-                    }
                 } else {
                     // Jika tidak ada data ujian aktif, pastikan variabel dibersihkan dan tampilkan login
                     currentUser = null;
@@ -2322,11 +2300,21 @@
             }
 
             
-            const SPLIT_SCREEN_THRESHOLD = 0.65; // 65% — ubah angka ini sesuai kebutuhan
+            const SPLIT_SCREEN_THRESHOLD = 0.75; // 75% — ubah angka ini sesuai kebutuhan
+
+            function getOrientedScreenSize() {
+                const longSide = Math.max(screen.width, screen.height);
+                const shortSide = Math.min(screen.width, screen.height);
+                const isLandscape = window.innerWidth >= window.innerHeight;
+                return isLandscape
+                    ? { w: longSide, h: shortSide }
+                    : { w: shortSide, h: longSide };
+            }
 
             function isScreenRatioViolated() {
-                const widthRatio = window.innerWidth / screen.width;
-                const heightRatio = window.innerHeight / screen.height;
+                const { w, h } = getOrientedScreenSize();
+                const widthRatio = window.innerWidth / w;
+                const heightRatio = window.innerHeight / h;
                 return widthRatio < SPLIT_SCREEN_THRESHOLD || heightRatio < SPLIT_SCREEN_THRESHOLD;
             }
 
@@ -2344,7 +2332,7 @@
                 localStorage.setItem('violationCount', violationCount.toString());
                 updateViolationDisplay();
                 const isLastViolation = violationCount >= MAX_VIOLATION_AUTOSUBMIT;
-                if (!isLastViolation) queueViolationWarning();   // pelanggaran terakhir: langsung kumpul, tanpa popup peringatan
+                if (!isLastViolation) showViolationWarning();   // pelanggaran terakhir: langsung kumpul, tanpa popup peringatan
                 if (typeof laporKeAdmin === 'function') laporKeAdmin();
 
                 // Kumpul otomatis jika pelanggaran mencapai batas
@@ -2370,6 +2358,8 @@
             // Prinsip: 1 kejadian hilang fokus = 1 pelanggaran. Tidak dihitung lagi
             // sampai halaman ujian kembali mendapat fokus.
             let focusLostActive = false;
+            let focusLostTimer = null;
+            const FOCUS_LOST_CONFIRM_MS = 400; // jeda konfirmasi agar blur sesaat tidak salah hitung
 
             function isExamActive() {
                 return currentUser?.role === 'siswa' && currentExam && !examSubmitted && !isRefreshing;
@@ -2377,27 +2367,20 @@
 
             function markFocusLost() {
                 if (!isExamActive() || focusLostActive) return;
-                if (document.hidden || !document.hasFocus()) {
-                    focusLostActive = true;
-                    recordViolation();
-                }
-            }
-
-            // Popup peringatan ditunda sampai siswa KEMBALI ke halaman ujian,
-            let pendingViolationWarning = false;
-            function queueViolationWarning() {
-                if (!document.hidden && document.hasFocus()) showViolationWarning(); // masih di halaman (mis. split screen)
-                else pendingViolationWarning = true;                                // tampilkan setelah kembali
+                clearTimeout(focusLostTimer);
+                focusLostTimer = setTimeout(() => {
+                    // konfirmasi: masih tidak fokus / masih tersembunyi?
+                    if (!isExamActive() || focusLostActive) return;
+                    if (document.hidden || !document.hasFocus()) {
+                        focusLostActive = true;
+                        recordViolation();
+                    }
+                }, FOCUS_LOST_CONFIRM_MS);
             }
 
             function markFocusRegained() {
-                if (document.hasFocus() && !document.hidden) {
-                    focusLostActive = false;
-                    if (pendingViolationWarning) {
-                        pendingViolationWarning = false;
-                        if (isExamActive()) showViolationWarning();
-                    }
-                }
+                clearTimeout(focusLostTimer);
+                if (document.hasFocus() && !document.hidden) focusLostActive = false;
             }
 
             function checkSplitScreenViolation() {
@@ -2412,7 +2395,7 @@
             let splitScreenResizeTimer = null;
             function handleResizeViolation() {
                 clearTimeout(splitScreenResizeTimer);
-                splitScreenResizeTimer = setTimeout(checkSplitScreenViolation, 500);
+                splitScreenResizeTimer = setTimeout(checkSplitScreenViolation, 700);
             }
 
             // Saat keluar dari fullscreen, beri jeda singkat lalu cek rasio layar
@@ -2436,8 +2419,11 @@
                 document.removeEventListener('mozfullscreenchange', handleFullscreenViolation);
                 document.removeEventListener('MSFullscreenChange', handleFullscreenViolation);
                 window.removeEventListener('resize', handleResizeViolation);
+                window.removeEventListener('orientationchange', handleResizeViolation);
                 window.removeEventListener('blur', handleBlurViolation);
                 window.removeEventListener('focus', handleFocusRegained);
+                window.removeEventListener('pagehide', handleBlurViolation);
+                window.removeEventListener('pageshow', handleFocusRegained);
                 
                 // Pasang listener yang baru
                 document.addEventListener('visibilitychange', handleVisibilityViolation);
@@ -2447,8 +2433,11 @@
                 document.addEventListener('mozfullscreenchange', handleFullscreenViolation);
                 document.addEventListener('MSFullscreenChange', handleFullscreenViolation);
                 window.addEventListener('resize', handleResizeViolation);
+                window.addEventListener('orientationchange', handleResizeViolation);
                 window.addEventListener('blur', handleBlurViolation);
                 window.addEventListener('focus', handleFocusRegained);
+                window.addEventListener('pagehide', handleBlurViolation);
+                window.addEventListener('pageshow', handleFocusRegained);
                 
                 // Polling cadangan: sebagian HP tidak memicu event blur saat overlay
                 // sistem (Circle to Search / Lens) muncul, tapi document.hasFocus() tetap false.
