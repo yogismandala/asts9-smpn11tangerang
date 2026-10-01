@@ -1638,6 +1638,7 @@
                                     <li>Waktu ujian akan berjalan otomatis saat Anda masuk.</li>
                                     <li>Dilarang keluar dari aplikasi atau merefresh halaman saat ujian berlangsung.</li>
                                     <li>Maksimal pelanggaran 5x, ketika pelanggaran mencapai 5x otomatis selesai</li>
+                                    <li>Aktifkan MODE JANGAN GANGGU di HP Anda sebelum masuk ruang ujian</li>
                                     <li>${infoAttempt}</li>
                                     <li>Kerjakan dengan jujur dan teliti.</li>
                                 </ul>
@@ -2323,7 +2324,7 @@
                 localStorage.setItem('violationCount', violationCount.toString());
                 updateViolationDisplay();
                 const isLastViolation = violationCount >= MAX_VIOLATION_AUTOSUBMIT;
-                if (!isLastViolation) showViolationWarning();   // pelanggaran terakhir: langsung kumpul, tanpa popup peringatan
+                if (!isLastViolation) queueViolationWarning();   // pelanggaran terakhir: langsung kumpul, tanpa popup peringatan
                 if (typeof laporKeAdmin === 'function') laporKeAdmin();
 
                 // Kumpul otomatis jika pelanggaran mencapai batas
@@ -2342,6 +2343,40 @@
                     Promise.resolve(submitExam(true))
                         .catch(err => console.error('Auto-submit pelanggaran gagal:', err))
                         .finally(() => { autoSubmitByViolationRunning = false; }); // boleh dicoba lagi jika gagal kirim
+                }
+            }
+
+            // ===== DETEKSI HILANG FOKUS (Circle to Search / Google Lens / Assistant / pindah app) =====
+            // Prinsip: 1 kejadian hilang fokus = 1 pelanggaran. Tidak dihitung lagi
+            // sampai halaman ujian kembali mendapat fokus.
+            let focusLostActive = false;
+
+            function isExamActive() {
+                return currentUser?.role === 'siswa' && currentExam && !examSubmitted && !isRefreshing;
+            }
+
+            function markFocusLost() {
+                if (!isExamActive() || focusLostActive) return;
+                if (document.hidden || !document.hasFocus()) {
+                    focusLostActive = true;
+                    recordViolation();
+                }
+            }
+
+            // Popup peringatan ditunda sampai siswa KEMBALI ke halaman ujian,
+            let pendingViolationWarning = false;
+            function queueViolationWarning() {
+                if (!document.hidden && document.hasFocus()) showViolationWarning(); // masih di halaman (mis. split screen)
+                else pendingViolationWarning = true;                                // tampilkan setelah kembali
+            }
+
+            function markFocusRegained() {
+                if (document.hasFocus() && !document.hidden) {
+                    focusLostActive = false;
+                    if (pendingViolationWarning) {
+                        pendingViolationWarning = false;
+                        if (isExamActive()) showViolationWarning();
+                    }
                 }
             }
 
@@ -2407,7 +2442,7 @@
                     if (!isExamActive()) return;
                     if (document.hidden || !document.hasFocus()) markFocusLost();
                     else markFocusRegained();
-                }, 700);
+                }, 600);
             }
             
             function updateViolationDisplay() {
